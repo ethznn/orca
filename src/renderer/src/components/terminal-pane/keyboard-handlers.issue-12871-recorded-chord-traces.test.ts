@@ -40,6 +40,7 @@ import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import type { PtyTransport } from './pty-transport'
 import { useTerminalKeyboardShortcuts } from './keyboard-handlers'
 import { COMMAND_RELEASE_TRACE_CASES } from './keyboard-handlers.issue-12871-command-release-traces'
+import { CHINESE_TRACE_CASES } from './keyboard-handlers.issue-12871-chinese-chord-traces'
 import { IN_APP_TRACE_CASES } from './keyboard-handlers.issue-12871-in-app-chord-traces'
 
 type RecordedRow = {
@@ -442,7 +443,7 @@ describe('recorded macOS chord traces during an IME composition', () => {
   })
 
   it.each(
-    [...CASES, ...IN_APP_TRACE_CASES, ...COMMAND_RELEASE_TRACE_CASES].map(
+    [...CASES, ...IN_APP_TRACE_CASES, ...COMMAND_RELEASE_TRACE_CASES, ...CHINESE_TRACE_CASES].map(
       (testCase) => [testCase.name, testCase] as const
     )
   )('%s', async (_name, testCase) => {
