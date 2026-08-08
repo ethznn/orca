@@ -265,64 +265,75 @@ test.describe('Native macOS IME cursor chords during composition @headful', () =
     })
   }
 
-  test('Kotoeri Romaji: Cmd+Left leaves the さ preedit live; its byte lands after the commit', async ({
-    electronApp,
-    orcaPage,
-    testRepoPath
-  }) => {
-    const processId = electronApp.process().pid
-    if (processId === undefined) {
-      throw new Error('Electron process id unavailable')
-    }
-    // Korean warmup first proves the rig composes at all before the source switch.
-    const setup = await setUpTerminalWithReader(orcaPage, testRepoPath, processId, true)
-    try {
-      enableInputSource(KOTOERI_ROMAJI_PARENT_ID)
-      enableInputSource(KOTOERI_ROMAJI_ID)
-      selectInputSource(KOTOERI_ROMAJI_ID)
-      bounceFocus(processId)
-      await focusActiveTerminalInput(orcaPage)
-      // Selecting the RomajiTyping mode succeeds, but TIS reports the current source under the
-      // legacy mode id 'com.apple.inputmethod.Japanese'.
-      await expect
-        .poll(() => readInputSourceId(orcaPage), { timeout: 10_000 })
-        .toMatch(/^com\.apple\.inputmethod\.(Kotoeri\.RomajiTyping\.)?Japanese$/)
-
-      // s(1) + a(0) → さ in the preedit. Bounce timing can swallow the first key; one retry.
-      typeKeyCodes(processId, [1, 0])
+  // Both chords over the same swallowed preedit. They reach the handler by different routes —
+  // `Option+←` delivers the arrow's own keyup, `Cmd+←` delivers none and is ended by the Command
+  // release instead — and the whole point of pinning them together is that the route must not
+  // show through here: the pty line is the same shape either way, preedit then movement byte.
+  // Without the Option row, the half that already worked could regress to silence and no test
+  // would notice.
+  for (const chord of [
+    { name: 'Cmd+Left', modifier: 'command' as const, pty: 'さ\x01\n' },
+    { name: 'Option+Left', modifier: 'option' as const, pty: 'さ\x1bb\n' }
+  ]) {
+    test(`Kotoeri Romaji: ${chord.name} leaves the さ preedit live; its byte lands after the commit`, async ({
+      electronApp,
+      orcaPage,
+      testRepoPath
+    }) => {
+      const processId = electronApp.process().pid
+      if (processId === undefined) {
+        throw new Error('Electron process id unavailable')
+      }
+      // Korean warmup first proves the rig composes at all before the source switch.
+      const setup = await setUpTerminalWithReader(orcaPage, testRepoPath, processId, true)
       try {
-        await expect
-          .poll(() => readActiveComposition(orcaPage), { timeout: 6_000 })
-          .toMatch(/[ぁ-ん]/)
-      } catch {
+        enableInputSource(KOTOERI_ROMAJI_PARENT_ID)
+        enableInputSource(KOTOERI_ROMAJI_ID)
+        selectInputSource(KOTOERI_ROMAJI_ID)
         bounceFocus(processId)
         await focusActiveTerminalInput(orcaPage)
-        typeKeyCodes(processId, [1, 0])
+        // Selecting the RomajiTyping mode succeeds, but TIS reports the current source under the
+        // legacy mode id 'com.apple.inputmethod.Japanese'.
         await expect
-          .poll(() => readActiveComposition(orcaPage), { timeout: 10_000 })
-          .toMatch(/[ぁ-ん]/)
+          .poll(() => readInputSourceId(orcaPage), { timeout: 10_000 })
+          .toMatch(/^com\.apple\.inputmethod\.(Kotoeri\.RomajiTyping\.)?Japanese$/)
+
+        // s(1) + a(0) → さ in the preedit. Bounce timing can swallow the first key; one retry.
+        typeKeyCodes(processId, [1, 0])
+        try {
+          await expect
+            .poll(() => readActiveComposition(orcaPage), { timeout: 6_000 })
+            .toMatch(/[ぁ-ん]/)
+        } catch {
+          bounceFocus(processId)
+          await focusActiveTerminalInput(orcaPage)
+          typeKeyCodes(processId, [1, 0])
+          await expect
+            .poll(() => readActiveComposition(orcaPage), { timeout: 10_000 })
+            .toMatch(/[ぁ-ん]/)
+        }
+
+        pressChord(processId, KEY.left, chord.modifier)
+        // Recorded: Kotoeri swallows the chord — no commit, no composition event. The preedit
+        // surviving the press is the half of #12871 that held on main and must keep holding.
+        await orcaPage.waitForTimeout(700)
+        await expect.poll(() => readActiveComposition(orcaPage)).toMatch(/[ぁ-ん]/)
+
+        // The Return commits さ and macOS redispatches it unmarked, which also flushes the line.
+        // Byte order pins the #12732 exemption end to end: the chord's byte was queued behind
+        // the preedit and must drain right after the commit — never before it, and exactly once.
+        // On a pre-fix build the Cmd line arrives as さ\n (the byte silently dropped), which is
+        // the #12871 defect this spec exists to keep fixed.
+        expect(await flushLineToReader(orcaPage, processId, setup.reader)).toEqual([
+          Buffer.from(chord.pty).toString('hex')
+        ])
+        expect(await getTerminalContent(orcaPage, 100_000)).toContain('さ')
+      } finally {
+        removeTerminalImeByteReader(setup.reader)
+        selectInputSource(TWO_SET_KOREAN_ID)
       }
-
-      pressChord(processId, KEY.left, 'command')
-      // Recorded: Kotoeri swallows the chord — no commit, no composition event. The preedit
-      // surviving the press is the half of #12871 that held on main and must keep holding.
-      await orcaPage.waitForTimeout(700)
-      await expect.poll(() => readActiveComposition(orcaPage)).toMatch(/[ぁ-ん]/)
-
-      // The Return commits さ and macOS redispatches it unmarked, which also flushes the line.
-      // Byte order pins the #12732 exemption end to end: the chord's \x01 was queued behind
-      // the preedit and must drain right after the commit — never before it, and exactly once.
-      // On a pre-fix build this line arrives as さ\n (the byte silently dropped), which is the
-      // #12871 defect this spec exists to keep fixed.
-      expect(await flushLineToReader(orcaPage, processId, setup.reader)).toEqual([
-        Buffer.from('さ\x01\n').toString('hex')
-      ])
-      expect(await getTerminalContent(orcaPage, 100_000)).toContain('さ')
-    } finally {
-      removeTerminalImeByteReader(setup.reader)
-      selectInputSource(TWO_SET_KOREAN_ID)
-    }
-  })
+    })
+  }
 
   test('ABC control: the same chords with no IME flow alone', async ({
     electronApp,
