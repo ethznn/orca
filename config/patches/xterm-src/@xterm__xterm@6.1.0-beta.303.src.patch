@@ -88,7 +88,7 @@ index 497afcf535f3eaca00889525a77e15eb633ccd96..96d499b34605f860608382114c3fbdc0
  
  export interface IBrowser {
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
-index c9ec396ab66cb966d49aa63bed09cdf9cd6c4246..e9bcbcb90c784ce9f1f0121af270ee79aa5ae793 100644
+index c9ec396ab66cb966d49aa63bed09cdf9cd6c4246..ca75cdf8b9971ed37e843eabbb65dd6bf9ddf815 100644
 --- a/src/browser/input/CompositionHelper.ts
 +++ b/src/browser/input/CompositionHelper.ts
 @@ -1,10 +1,19 @@
@@ -966,7 +966,7 @@ index c9ec396ab66cb966d49aa63bed09cdf9cd6c4246..e9bcbcb90c784ce9f1f0121af270ee79
          this._dataAlreadySent = diff;
  
          if (newValue.length > oldValue.length) {
-@@ -236,6 +859,272 @@ export class CompositionHelper {
+@@ -236,6 +859,276 @@ export class CompositionHelper {
      }, 0);
    }
  
@@ -1170,7 +1170,11 @@ index c9ec396ab66cb966d49aa63bed09cdf9cd6c4246..e9bcbcb90c784ce9f1f0121af270ee79
 +    }
 +    if (cell.isUnderline()) {
 +      // SGR 4:2-5 pick a line the renderer draws through its own `xterm-underline-N` classes.
-+      const underlineStyle = UNDERLINE_DECORATION_STYLES[cell.extended.underlineStyle];
++      // Through the accessor rather than `extended.underlineStyle`. The two agree for anything the
++      // parser writes, since `_processUnderline` attaches extended attributes even to a plain
++      // SGR 4, but the accessor is the form that also reports SINGLE for a cell carrying the
++      // underline flag without them.
++      const underlineStyle = UNDERLINE_DECORATION_STYLES[cell.getUnderlineStyle()];
 +      if (underlineStyle) {
 +        declarations.push(`text-decoration-style:${underlineStyle}`);
 +      }
@@ -1239,7 +1243,7 @@ index c9ec396ab66cb966d49aa63bed09cdf9cd6c4246..e9bcbcb90c784ce9f1f0121af270ee79
    /**
     * Positions the composition view on top of the cursor and the textarea just below it (so the
     * IME helper dialog is positioned correctly).
-@@ -243,10 +1132,20 @@ export class CompositionHelper {
+@@ -243,10 +1136,20 @@ export class CompositionHelper {
     *   necessary as the IME events across browsers are not consistently triggered.
     */
    public updateCompositionElements(dontRecurse?: boolean): void {
@@ -1261,7 +1265,7 @@ index c9ec396ab66cb966d49aa63bed09cdf9cd6c4246..e9bcbcb90c784ce9f1f0121af270ee79
      if (this._bufferService.buffer.isCursorInViewport) {
        const cursorX = Math.min(this._bufferService.buffer.x, this._bufferService.cols - 1);
  
-@@ -254,31 +1153,156 @@ export class CompositionHelper {
+@@ -254,31 +1157,156 @@ export class CompositionHelper {
        const cursorTop = this._bufferService.buffer.y * this._renderService.dimensions.css.cell.height;
        const cursorLeft = cursorX * this._renderService.dimensions.css.cell.width;
  
