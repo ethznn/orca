@@ -32,6 +32,14 @@ function nextEventLoop(): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, 0))
 }
 
+type TerminalRenderService = {
+  _core: {
+    _renderService: {
+      dimensions: { css: { cell: { height: number; width: number } } }
+    }
+  }
+}
+
 type Rig = {
   compositionView: HTMLElement
   compose: (preedit: string) => void
@@ -52,13 +60,11 @@ function openTerminal(): Rig {
   }
   openTerminals.push(terminal)
 
-  const cell = (
-    terminal as unknown as {
-      _core: {
-        _renderService: { dimensions: { css: { cell: { height: number; width: number } } } }
-      }
-    }
-  )._core._renderService.dimensions.css.cell
+  // The DOM renderer's cell metrics come from layout, which happy-dom never performs, so the
+  // suite pins them directly.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: only the metrics field read on the next line is reached through this, and the test fails loudly if xterm stops providing it.
+  const withRenderService = terminal as unknown as TerminalRenderService
+  const cell = withRenderService._core._renderService.dimensions.css.cell
   cell.width = 8
   cell.height = 16
 
@@ -91,6 +97,11 @@ function openTerminal(): Rig {
   return { compositionView, compose, terminal, write, writeAwaitingRender }
 }
 
+/** The tail's styled runs. Text nodes are the cells that needed no style of their own. */
+function runsOf(tail: HTMLElement): HTMLElement[] {
+  return Array.from(tail.children).filter((child) => child instanceof HTMLElement)
+}
+
 /** The tail the view renders after the preedit, found by class rather than position. */
 function tailOf(view: HTMLElement): HTMLElement {
   const remainder = view.querySelector<HTMLElement>('.xterm-composition-remainder')
@@ -103,9 +114,10 @@ function tailOf(view: HTMLElement): HTMLElement {
 describe('a rendered composition tail keeps its cells’ styling', () => {
   beforeEach(() => {
     // happy-dom has no 2d context, which the DOM renderer's WidthCache requires.
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-      measureText: () => ({ width: 10 })
-    } as unknown as CanvasRenderingContext2D)
+    const measuring = { measureText: () => ({ width: 10 }) }
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: WidthCache calls only measureText on the context it is given; nothing else on a canvas context is reachable from this suite.
+    const context = measuring as unknown as CanvasRenderingContext2D
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context)
   })
 
   afterEach(async () => {
@@ -128,7 +140,7 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     const tail = tailOf(rig.compositionView)
     expect(tail.textContent).toBe('Ask anything')
-    const runs = Array.from(tail.children) as HTMLElement[]
+    const runs = runsOf(tail)
     expect(runs).toHaveLength(1)
     expect(runs[0]!.textContent).toBe('Ask anything')
     // Dim halves the foreground's opacity, the way the renderer fades a dim cell.
@@ -142,7 +154,7 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     rig.compose('ㄱ')
 
-    const runs = Array.from(tailOf(rig.compositionView).children) as HTMLElement[]
+    const runs = runsOf(tailOf(rig.compositionView))
     expect(runs).toHaveLength(1)
     expect(runs[0]!.textContent).toBe('error')
     expect(runs[0]!.style.color).not.toBe('')
@@ -169,7 +181,7 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     const tail = tailOf(rig.compositionView)
     expect(tail.textContent).toBe('abcd')
-    const runs = Array.from(tail.children) as HTMLElement[]
+    const runs = runsOf(tail)
     // Only the dim half needs a span; `ab` stays a bare text node ahead of it.
     expect(runs).toHaveLength(1)
     expect(runs[0]!.textContent).toBe('cd')
@@ -182,7 +194,7 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     rig.compose('ㄱ')
 
-    const runs = Array.from(tailOf(rig.compositionView).children) as HTMLElement[]
+    const runs = runsOf(tailOf(rig.compositionView))
     expect(runs).toHaveLength(2)
     expect(runs[0]!.textContent).toBe('bold')
     expect(runs[0]!.style.fontWeight).toBe('bold')
@@ -201,8 +213,30 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     const tail = tailOf(rig.compositionView)
     expect(tail.textContent).toBe('한글 tail')
-    const runs = Array.from(tail.children) as HTMLElement[]
+    const runs = runsOf(tail)
     expect(runs).toHaveLength(1)
+    expect(DIMMED_FOREGROUND).toContain(runs[0]!.style.color)
+  })
+
+  it('closes a run on the wide character’s far cell, not on its continuation', async () => {
+    const rig = openTerminal()
+    // `ab` default, then two dim syllables that end the row. Four of the six cells are wide, and
+    // two of those are the zero-width continuations — the ones a per-cell walk would emit as
+    // extra runs, and the last of which sits on the trimmed end column.
+    await rig.write('ab\x1b[2m한글\x1b[0m\x1b[6D')
+
+    rig.compose('ㄱ')
+
+    const tail = tailOf(rig.compositionView)
+    expect(tail.textContent).toBe('ab한글')
+    // Exactly two nodes: the bare default text and the dim span. A continuation emitted as a run
+    // of its own would add a third, empty one — invisible to `textContent`.
+    expect(tail.childNodes).toHaveLength(2)
+    expect(tail.childNodes[0]!.textContent).toBe('ab')
+    const runs = runsOf(tail)
+    expect(runs).toHaveLength(1)
+    // The boundary falls between `b` and `한`, so neither syllable is split or duplicated.
+    expect(runs[0]!.textContent).toBe('한글')
     expect(DIMMED_FOREGROUND).toContain(runs[0]!.style.color)
   })
 
@@ -214,20 +248,34 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     rig.compose('ㄱ')
 
-    const runs = Array.from(tailOf(rig.compositionView).children) as HTMLElement[]
+    const runs = runsOf(tailOf(rig.compositionView))
     expect(runs).toHaveLength(1)
     expect(runs[0]!.textContent).toBe('inv')
     expect(THEME_BACKGROUND).toContain(runs[0]!.style.color)
     expect(THEME_FOREGROUND).toContain(runs[0]!.style.backgroundColor)
   })
 
+  it('swaps an inverse cell’s own pair, not just the theme’s', async () => {
+    const rig = openTerminal()
+    // SGR 7 over an explicit truecolour pair. Reading the cell's fields straight through would
+    // render the text in its own foreground over its own background — unswapped, and so
+    // indistinguishable from the same cell without SGR 7.
+    await rig.write('\x1b[38;2;10;20;30m\x1b[48;2;200;100;50m\x1b[7msel\x1b[0m\x1b[3D')
+
+    rig.compose('ㄱ')
+
+    const runs = runsOf(tailOf(rig.compositionView))
+    expect(runs).toHaveLength(1)
+    expect(runs[0]!.textContent).toBe('sel')
+    expect(['#c86432', 'rgb(200, 100, 50)']).toContain(runs[0]!.style.color)
+    expect(['#0a141e', 'rgb(10, 20, 30)']).toContain(runs[0]!.style.backgroundColor)
+  })
+
   it('refreshes the tail when a repaint changes only its colour', async () => {
     const rig = openTerminal()
     await rig.write('\x1b[2mAsk anything\x1b[0m\x1b[12D')
     rig.compose('ㄱ')
-    expect(DIMMED_FOREGROUND).toContain(
-      (Array.from(tailOf(rig.compositionView).children)[0] as HTMLElement).style.color
-    )
+    expect(DIMMED_FOREGROUND).toContain(runsOf(tailOf(rig.compositionView))[0]!.style.color)
 
     // The CLI drops the hint styling but writes the same characters back. Comparing text alone
     // would report no change and leave the faded tail on screen.
@@ -245,7 +293,7 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
 
     rig.compose('ㄱ')
 
-    const runs = Array.from(tailOf(rig.compositionView).children) as HTMLElement[]
+    const runs = runsOf(tailOf(rig.compositionView))
     expect(runs).toHaveLength(1)
     expect(runs[0]!.style.textDecorationLine).toBe('underline')
     // Collapsing every variant to a plain underline is what this guards against.
