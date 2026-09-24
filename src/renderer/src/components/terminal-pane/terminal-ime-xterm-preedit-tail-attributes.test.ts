@@ -22,6 +22,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const THEME = { background: '#112233', foreground: '#aabbcc' }
 /** The theme foreground at half opacity, in either form a DOM may report it. */
 const DIMMED_FOREGROUND = ['#aabbcc80', 'rgba(170, 187, 204, 0.5)']
+/** The theme's own pair, which an inverse cell renders with, in either form. */
+const THEME_BACKGROUND = ['#112233', 'rgb(17, 34, 51)']
+const THEME_FOREGROUND = ['#aabbcc', 'rgb(170, 187, 204)']
 
 const openTerminals: Terminal[] = []
 
@@ -185,6 +188,37 @@ describe('a rendered composition tail keeps its cells’ styling', () => {
     expect(runs[0]!.style.fontWeight).toBe('bold')
     expect(runs[1]!.textContent).toBe('ital')
     expect(runs[1]!.style.fontStyle).toBe('italic')
+  })
+
+  it('walks a wide CJK tail by cell pairs rather than by cell', async () => {
+    const rig = openTerminal()
+    // A Hangul syllable occupies two cells: the character sits in the first and the second is a
+    // zero-width continuation. Advancing one cell at a time would read that continuation as
+    // another character and pad the tail out to twice its width.
+    await rig.write('\x1b[2m한글 tail\x1b[0m\x1b[9D')
+
+    rig.compose('ㄱ')
+
+    const tail = tailOf(rig.compositionView)
+    expect(tail.textContent).toBe('한글 tail')
+    const runs = Array.from(tail.children) as HTMLElement[]
+    expect(runs).toHaveLength(1)
+    expect(DIMMED_FOREGROUND).toContain(runs[0]!.style.color)
+  })
+
+  it('swaps the pair an inverse tail renders with, rather than dropping it', async () => {
+    const rig = openTerminal()
+    // SGR 7 on default colours: the cell has no colour of its own, so the swap has to come from
+    // the theme's own pair rather than from the cell's fg/bg fields.
+    await rig.write('\x1b[7minv\x1b[0m\x1b[3D')
+
+    rig.compose('ㄱ')
+
+    const runs = Array.from(tailOf(rig.compositionView).children) as HTMLElement[]
+    expect(runs).toHaveLength(1)
+    expect(runs[0]!.textContent).toBe('inv')
+    expect(THEME_BACKGROUND).toContain(runs[0]!.style.color)
+    expect(THEME_FOREGROUND).toContain(runs[0]!.style.backgroundColor)
   })
 
   it('refreshes the tail when a repaint changes only its colour', async () => {
